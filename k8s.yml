@@ -1,0 +1,503 @@
+#- hosts: localhost
+#  vars_files:
+#    - tf_ansible_vars_file.yml
+#  tasks:
+#    - name: Check mandatory variables imported from Terraform
+#      assert:
+#        that##:
+#        - ip_masters is defined
+#          - ip_workers is defined
+#          - ip_ha is defined
+#       fail_msg: "tf_* variable usually defined in 'tf_ansible_vars_file.yml' is missing"
+
+
+- hosts: 'all'
+  become: yes
+  vars_files:
+    - tf_ansible_vars_file.yml
+
+  tasks:
+          # - name: configuration proxy & non-proxy
+          #blockinfile:
+          #path: .bashrc
+          #block: |
+     - name: restart .bashrc
+       shell: source /root/.bashrc
+       args:
+         executable: /bin/bash
+
+     - name: configuration hosts
+       blockinfile:
+         path: /etc/hosts
+         block: |
+                {{ ip_ha }} k8s-haproxy
+
+- hosts: 'all'
+  become: yes
+
+  tasks:
+    - name: rename sysctl.conf
+      shell: mv /etc/sysctl.conf /etc/sysctl.conf.old
+
+    - name: download sysctl.conf
+      get_url:
+        url: https://gist.githubusercontent.com/yegorg/36cf9710e8ef50fa07571db0f4b981f9/raw/b82710dfd03df131818ced7634c1c7b7e663dc6c/sysctl.conf
+        dest: /etc/sysctl.conf
+
+    - name: Disables packet forwarding
+      replace:
+         path: "/etc/sysctl.conf"
+         regexp: 'net.ipv4.ip_forward = 0'
+         replace: '#net.ipv4.ip_forward = 0'
+
+    - name: Disables packet forwarding
+      replace:
+         path: "/etc/sysctl.conf"
+         regexp: 'net.ipv4.conf.all.forwarding = 0'
+         replace: '#net.ipv4.conf.all.forwarding = 0'
+
+    - name: Disables packet forwarding
+      replace:
+         path: "/etc/sysctl.conf"
+         regexp: 'net.ipv4.conf.default.forwarding = 0'
+         replace: '#net.ipv4.conf.default.forwarding = 0'
+
+    - name: Disables packet forwarding
+      replace:
+         path: "/etc/sysctl.conf"
+         regexp: 'net.ipv6.conf.all.forwarding = 0'
+         replace: '#net.ipv6.conf.all.forwarding = 0'
+
+    - name: Disables packet forwarding
+      replace:
+         path: "/etc/sysctl.conf"
+         regexp: 'net.ipv6.conf.default.forwarding = 0'
+         replace: '#net.ipv6.conf.default.forwarding = 0'
+
+    - name: validation sysctl.conf
+      shell: |
+             sysctl -e -p /etc/sysctl.conf
+             sysctl -a | grep "net.core.somaxconn"
+             #register: sysctl
+
+             # debug: var=sysctl.stdout_lines
+      #- hosts: all
+      #become: yes
+  
+      #tasks:
+      #- name: install ntp
+      #shell: |
+      #  apt-get install ntp -y
+
+              #- name: configuration ntp.conf
+              #blockinfile:
+              #path: "/etc/ntp.conf"
+              #insertafter: 'pool 3.ubuntu.pool.ntp.org iburst'
+              #block: |
+              #pool timeserver.mea.or.th iburst
+
+      #- name: comment ntp.conf
+      #replace:
+      #  path: "/etc/ntp.conf"
+      #  regexp: 'pool 0.ubuntu.pool.ntp.org iburst'
+      #  replace: '#pool 0.ubuntu.pool.ntp.org iburst'
+
+         #- name: comment ntp.conf
+       #replace:
+               # path: "/etc/ntp.conf"
+         #regexp: 'pool 1.ubuntu.pool.ntp.org iburst'
+         #replace: '#pool 1.ubuntu.pool.ntp.org iburst'
+      
+         #- name: comment ntp.conf
+       #replace:
+               #path: "/etc/ntp.conf"
+         #regexp: 'pool 2.ubuntu.pool.ntp.org iburst'
+         #replace: '#pool 2.ubuntu.pool.ntp.org iburst'
+
+         #- name: comment ntp.conf
+       #replace:
+               #path: "/etc/ntp.conf"
+         #regexp: 'pool 3.ubuntu.pool.ntp.org iburst'
+         #replace: '#pool 3.ubuntu.pool.ntp.org iburst'
+
+         #- name: restart ntp
+       #shell: |
+               # service ntp restart
+
+- hosts: 'all'
+  become: yes
+
+  tasks:
+     - name: install docker & docker-compose
+       shell: |
+              curl -sSL https://get.docker.com/ | sh
+              apt-get install docker-compose -y
+
+     - name: configure docker daemon
+       copy:
+         dest: /etc/docker/daemon.json
+         content: |
+           {
+           "exec-opts": ["native.cgroupdriver=systemd"],
+           "log-driver": "json-file",
+           "log-opts": {
+           "max-size": "100m"
+           },
+           "storage-driver": "overlay2"
+           }
+
+     - name: Creeate docker.service.d directory
+       file:
+         path: /etc/systemd/system/docker.service.d
+         state: directory
+
+     - name: Restart Docker
+       shell: |
+              systemctl daemon-reload
+              systemctl restart docker
+              systemctl enable docker
+
+              #- name: configure docker daemon
+              #copy:
+              #dest: /etc/systemd/system/docker.service.d/http-proxy.conf
+
+              #- name: Restart Docker
+              #shell: |
+              #systemctl daemon-reload
+              #systemctl restart docker
+
+- hosts: 'worker, masters'
+  become: yes
+
+  tasks:
+    - name: configure k8s.conf
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+                  net.bridge.bridge-nf-call-ip6tables = 1
+                  net.bridge.bridge-nf-call-iptables = 1
+    
+    - name: reload k8s.conf
+      shell: |
+             sudo sysctl --system
+
+    - name: disable swap
+      shell: |
+               sudo swapoff -a
+               sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+    - name: install and configure dependencies
+      shell: |
+               sudo apt-get update && sudo apt-get install -y apt-transport-https curl
+               curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+
+    - name: Create kubernetes repo file
+      file:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        state: "touch"
+
+    - name: Add K8s Source
+      blockinfile:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        block: |
+               deb https://apt.kubernetes.io/ kubernetes-xenial main
+
+    - name: install kubernetes
+      shell: |
+               sudo apt-get update
+               sudo apt-get install -y vim git curl wget kubelet kubeadm kubectl
+               sudo apt-mark hold kubelet kubeadm kubectl
+
+- hosts: 'ha'
+  become: yes
+  vars_files:
+    - tf_ansible_vars_file.yml
+  
+  #pre_tasks:
+          #- set_fact:
+          #fs_ip_addr: "{{ (lookup('file', '/etc/ansible/hosts').splitlines#()|
+          #    list|
+          #              select('search', ansible_host)|
+          #              list|
+          #              first).split().0 }}"
+          # vars:
+          #ansible_host: "master"
+   
+          #- name: master's_ipaddress
+          #debug: var=ansible_host.stdout
+          #- name: get file server's IP address
+          #shell: |
+          #awk '/master/{print $1}' /etc/ansible/hosts
+          #register: fs_ip_addr
+          #delegate_to: localhost
+
+          #- debug: var=fs_ip_addr
+          #- debug: var=hostvars['master']['ansible_default_ipv4']['address']
+
+  tasks:
+    - name: install haproxy
+      shell: |
+             apt-get update
+             apt-get install -y haproxy
+    
+             #- debug: var=hostvars['master'][['ansible_default_ipv4']['address']
+   
+    - name: configure haproxy.cfg
+      blockinfile:
+        path: /etc/haproxy/haproxy.cfg
+        block: |
+               #--------------------------------------------------------------#
+               # api-server
+               frontend apiserver
+               bind *:6443
+               mode tcp
+               option tcplog
+               default_backend apiserver
+               backend apiserver
+               option httpchk GET /healthz
+               http-check expect status 200
+               mode tcp
+               option ssl-hello-chk
+               balance roundrobin
+               server k8s01  {{ ip_master1 }}:6443  check
+               server k8s02 {{ ip_master2 }}:6443  check
+               server k8s03 {{ ip_master3 }}:6443  check
+               #--------------------------------------------------------------#
+               # k8s-backend
+               frontend k8s-backend
+               bind *:80
+               mode http
+               # option tcplog
+               default_backend k8s-backend
+               backend k8s-backend
+               option httpchk GET /healthz
+               http-check expect status 200
+               mode http
+               #  option ssl-hello-chk
+               balance roundrobin
+               server k8s04  {{ ip_workers }}:80 check
+                #server k8s05 192.168.10.135:31848 check
+                # server k8s06 192.168.10.136:31848 check
+                #server k8s07 192.168.10.137:31848 check
+                # server k8s08 192.168.10.138:31848 check
+                # server k8s09 192.168.10.139:31848 check
+                #server k8s10 192.168.10.140:31848 check
+                #--------------------------------------------------------------#
+
+    - name: restart haproxy
+      shell: |
+             service haproxy restart
+
+- hosts: master1
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: checking connection to ha
+      shell: |
+             echo 'status' | nc -v k8s-haproxy 6443
+      register: nc
+
+    - debug: var=nc.stdout
+
+    - name: Init cluster
+      shell: |
+             kubeadm init --control-plane-endpoint "k8s-haproxy:6443" --upload-certs
+      register: kubeadmout
+      #ignore_errors: yes
+    - name: install netstat
+      shell: |
+             apt install net-tools 
+    
+    - name: checkport 
+      shell: |
+              netstat -anp|grep {{item}}
+      ignore_errors: yes
+      vars:
+        portcheck:
+           - 6443
+           - 10259
+      with_items: "{{ portcheck }}"
+      register: netstat
+
+    - debug: msg={{ports are already in use }}
+      when: netstat.results[0].rc == "1" and nestat.results[1] == "1"
+
+    - local_action: copy content=((kubeadmout.stdout}} dest="./token"
+      #- name: Store init output
+      #action: copy content="{{ rslt.stdout }}" dest="/etc/kubernetes/kubeadm-init.stdout"
+     
+    - name: Get the token for joining nodes
+      shell: kubeadm token create  --print-join-command
+      register: join_command
+      #delegate_to: masters
+    - name: set join command fact
+      set_fact:
+        join_command: "{{join_command.stdout_lines[0]}}"
+
+    - name: generate the control plane cert key
+      shell: kubeadm init phase upload-certs --upload-certs
+      register: kubeadm_cert_key
+
+    - name: register the cert key
+      set_fact:
+        control_plane_certkey: "{{kubeadm_cert_key.stdout_lines[2]}}"
+
+        #- name: show the value of output
+        #ansible.builtin.debug: 
+        #msg: "{{ kubernetes_join_command.stdout }}"
+
+          #- name: set join command fact
+          #set_fact:
+          #join_command: "{{join_command.stdout_line[0]}}"
+
+        #- name: Copy join command to local file.
+        #become: yes
+        #local_action: copy content="{{ kubernetes_join_command.stdout_lines[0] }}" dest="/tmp/kubernetes_join_command" mode=0777
+  
+    - name: Create .kube directory
+      file:
+        path: $HOME/.kube
+        state: directory
+        mode: 0755
+
+    - name: copies admin.conf to user's kube config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: $HOME/.kube/config
+        remote_src: yes
+
+    - name: chown config
+      shell: |
+             sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+    - name: change permission
+      shell: |
+            chmod g+r $HOME/.kube/config
+            chmod go-r $HOME/.kube/config
+
+    - name: install Pod network
+      shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml 
+      args:
+        chdir: $HOME
+
+- hosts: 'master2, master3'
+  become: yes
+  #gather_facts: yes
+
+  tasks:
+    - name: join control-plane nodes
+      shell: "{{hostvars['master1'].join_command}} --control-plane --certificate-key {{hostvars['master1'].control_plane_certkey}}"
+      register: joinmaster
+
+    - debug: msg={{joinmaster}}
+    - local_action: copy content=((joinmaster.stdout}} dest="./join_controlplane_node"
+          #- name: join control-plane nodes
+          #shell: "{{ kubeadm_join }} --control-plane "
+     #register: joinmaster
+
+     #- debug: msg={{joinmaster}}
+     #- local_action: copy content=((joinmaster.stdout}} dest="./join_controlplane_node"
+
+- hosts: worker
+  become: yes
+  #gather_facts: yes
+
+  #tasks:
+  # - name: Copy join command from Ansiblehost to the worker nodes.
+  #  become: yes
+  #  copy:
+  #    src: /tmp/kubernetes_join_command
+  #    dest: /tmp/kubernetes_join_command
+  #    mode: 0777
+
+  #- name: Join the Worker nodes to the cluster.
+  #  become: yes
+  #  command: sh /tmp/kubernetes_join_command
+  #  register: joined_or_not
+  tasks:
+    - name: join all workers
+      shell: "{{hostvars['master1'].join_command}}"
+      register: workerjoin
+    - local_action: copy content={{workerjoin.stdout}} dest="./join_workers"
+
+      #- local_action: copy content={{workerjoin.stdout}} dest="./join_workers"
+
+- hosts: masters
+  become: yes
+
+  tasks:
+    - name: install helm
+      shell: |
+             curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+             chmod 700 get_helm.sh
+             ./get_helm.sh
+
+    - name: add repo
+      shell: |
+             helm repo add stable https://charts.helm.sh/stable
+
+    - name: update helm
+      shell: |
+             helm repo update
+
+- hosts: master1
+  become: yes
+
+  tasks:
+    - name: install nginx-ingress
+      shell: |
+             helm install nginx-ingress --set controller.kind=DaemonSet stable/nginx-ingress
+
+    - name: check pod
+      shell: |
+             kubectl get pod --all-namespaces
+      register: pod
+
+    - debug: var=pod.stdout_lines
+
+    - name: check service
+      shell: |
+             kubectl get service --all-namespaces
+      register: service
+
+    - debug: var=service.stdout_lines
+
+- hosts: master1
+  become: yes
+
+  tasks:
+    - name: create nginx class
+      copy:
+        dest: "$HOME/ingressclass.yml"
+        content: |
+                 apiVersion: networking.k8s.io/v1
+                 kind: IngressClass
+                 metadata:
+                   labels:
+                     app.kubernetes.io/component: controller
+                   name: nginx
+                   annotations:
+                     ingressclass.kubernetes.io/is-default-class: "true"
+                 spec:
+                   controller: k8s.io/ingress-nginx
+
+
+- hosts: master1
+  become: yes
+
+  tasks:
+    - name: configre ha-proxy and apply class
+      shell: |
+              kubectl get svc/nginx-ingress-controller -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}'
+              kubectl apply -f $HOME/ingressclass.yml
+      register: port
+
+    - name: port
+      debug: var=port.stdout
+
+- hosts: ha
+  become: yes
+
+  tasks:
+    - debug:
